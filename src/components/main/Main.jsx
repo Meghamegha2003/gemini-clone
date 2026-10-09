@@ -1,8 +1,13 @@
-import React from 'react'
+import React, { useContext } from 'react'
 import './main.css'
 import { assets } from '../../assets/assets'
+import { ContextApi } from '../../context/ContextApi'
+import { marked } from 'marked'
 
 const Main = () => {
+
+  const {input,setInput,resultData,showResult,recentPrompt,loading,onSent} = useContext(ContextApi)
+
   return (
     <div className='main'>
         <div className="nav">
@@ -12,7 +17,9 @@ const Main = () => {
 
         <div className="main-container">
 
-          <div className="greet">
+          {!showResult ? (
+            <>
+            <div className="greet">
             <p><span>Hello, Megha.</span></p>
             <p>How can I help you today?</p>
           </div>
@@ -40,14 +47,38 @@ const Main = () => {
             </div>
 
           </div>
+            </>
+          ) : (
+            <div className="result">
+              <div className="result-title">
+                <img src={assets.user_icon} alt="" />
+                <p>{recentPrompt}</p>
+              </div>
+
+              <div className="result-data">
+                <img src={assets.gemini_icon} alt="" />
+                {loading ? (
+                  <>
+                  <div className="loader">
+                    <hr />
+                    <hr />
+                    <hr />
+                  </div>
+                  </>
+                ) : (
+                  <p dangerouslySetInnerHTML={{ __html: marked.parse(resultData) }} ></p>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="main-bottom">
             <div className="search-box">
-              <input type="text" placeholder='Enter a prompt here' name="" id="" />
+              <input type="text" placeholder='Enter a prompt here' value={input} onChange={(e)=>setInput(e.target.value)}/>
               <div>
                   <img src={assets.gallery_icon} alt="" />                
                   <img src={assets.mic_icon} alt="" />                
-                  <img src={assets.send_icon} alt="" />                
+                  <img onClick={()=>onSent()} src={assets.send_icon} alt="Send" />                
               </div>
             </div>
 
