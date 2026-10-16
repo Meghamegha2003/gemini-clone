@@ -1,4 +1,3 @@
-
 import { createContext, useState, useEffect, useRef } from "react";
 import runChat from "../config/gemini";
 
@@ -6,9 +5,18 @@ export const ContextApi = createContext();
 
 const getInitialHistory = () => {
   try {
-    return JSON.parse(localStorage.getItem("chatHistory")) || [];
+    const saved = JSON.parse(localStorage.getItem("chatHistory"));
+    return Array.isArray(saved) ? saved : [];
   } catch {
     return [];
+  }
+};
+
+const getInitialActiveChatId = () => {
+  try {
+    return localStorage.getItem("activeChatId") || null;
+  } catch {
+    return null;
   }
 };
 
@@ -32,14 +40,45 @@ const fileToDataUrl = (file) =>
       }
     };
 
-    reader.onerror = () => reject(new Error("Failed to display image."));
+    reader.onerror = () =>
+      reject(new Error("Failed to display image."));
+
     reader.readAsDataURL(file);
   });
+
+const getErrorMessage = (error) => {
+  const message = String(error?.message || error || "");
+  const status = error?.status ?? error?.code;
+
+  if (
+    status === 429 ||
+    message.includes("429") ||
+    message.toLowerCase().includes("rate limit") ||
+    message.toLowerCase().includes("quota")
+  ) {
+    return "API usage limit reached. Please check your model quota and try again when it resets.";
+  }
+
+  if (status === 503 || message.includes("503")) {
+    return "The AI service is temporarily unavailable. Please try again shortly.";
+  }
+
+  if (
+    message.includes("ERR_QUIC_PROTOCOL_ERROR") ||
+    message.includes("QUIC_TOO_MANY_RTOS") ||
+    message.toLowerCase().includes("network error") ||
+    message.toLowerCase().includes("failed to fetch")
+  ) {
+    return "Connection interrupted while receiving the response. Any received text has been preserved. Please try again.";
+  }
+
+  return message || "Something went wrong. Please try again.";
+};
 
 const ContextProvider = ({ children }) => {
   const [chatHistory, setChatHistory] = useState(getInitialHistory);
   const [activeChatId, setActiveChatId] = useState(
-    () => getInitialHistory()[0]?.id || null
+    getInitialActiveChatId
   );
   const [input, setInput] = useState("");
   const [recentPrompt, setRecentPrompt] = useState("");
@@ -47,7 +86,8 @@ const ContextProvider = ({ children }) => {
   const [resultData, setResultData] = useState("");
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([]);
-  const [currentInteractionId, setCurrentInteractionId] = useState(null);
+  const [currentInteractionId, setCurrentInteractionId] =
+    useState(null);
 
   const loadingRef = useRef(false);
   const interactionIdRef = useRef(null);
@@ -68,19 +108,100 @@ const ContextProvider = ({ children }) => {
 
     try {
       localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
-    } catch {
-      console.error("Chat history could not be saved. Storage may be full.");
+    } catch (error) {
+      console.error("Could not save chat history:", error);
     }
   }, [chatHistory]);
 
+  useEffect(() => {
+    try {
+      if (activeChatId) {
+        localStorage.setItem("activeChatId", activeChatId);
+      } else {
+        localStorage.removeItem("activeChatId");
+      }
+    } catch (error) {
+      console.error("Could not save active chat:", error);
+    }
+  }, [activeChatId]);
+
+  useEffect(() => {
+    const chat = chatHistory.find(
+      (item) => item.id === activeChatId
+    );
+
+    if (!chat) {
+      if (activeChatId) {
+        setActiveChatId(null);
+        activeChatIdRef.current = null;
+      }
+
+      setMessages([]);
+      messagesRef.current = [];
+      setCurrentInteractionId(null);
+      interactionIdRef.current = null;
+      setShowResult(false);
+      setResultData("");
+      return;
+    }
+
+    const restoredMessages = chat.messages || [];
+    const restoredInteractionId = chat.interactionId || null;
+
+    setMessages(restoredMessages);
+    messagesRef.current = restoredMessages;
+
+    setCurrentInteractionId(restoredInteractionId);
+    interactionIdRef.current = restoredInteractionId;
+
+    setShowResult(restoredMessages.length > 0);
+    setResultData(
+      [...restoredMessages]
+        .reverse()
+        .find((message) => message.role === "assistant")
+        ?.text || ""
+    );
+  }, [activeChatId, chatHistory]);
+
   const updateChat = (chatId, updates) => {
-    setChatHistory((previous) =>
-      previous.map((chat) =>
+    setChatHistory((previous) => {
+      const next = previous.map((chat) =>
         chat.id === chatId
           ? { ...chat, ...updates, updatedAt: Date.now() }
           : chat
-      )
+      );
+
+      chatHistoryRef.current = next;
+      return next;
+    });
+  };
+
+  const updateAssistantMessage = (chatId, messageId, text) => {
+    const nextMessages = messagesRef.current.map((message) =>
+      message.id === messageId ? { ...message, text } : message
     );
+
+    messagesRef.current = nextMessages;
+
+    if (activeChatIdRef.current === chatId) {
+      setMessages(nextMessages);
+      setResultData(text);
+    }
+
+    setChatHistory((previous) => {
+      const updated = previous.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              messages: nextMessages,
+              updatedAt: Date.now(),
+            }
+          : chat
+      );
+
+      chatHistoryRef.current = updated;
+      return updated;
+    });
   };
 
   const newChat = () => {
@@ -101,27 +222,47 @@ const ContextProvider = ({ children }) => {
   const selectChat = (chatId) => {
     if (loadingRef.current) return;
 
-    const chat = chatHistoryRef.current.find((item) => item.id === chatId);
+    const chat = chatHistoryRef.current.find(
+      (item) => item.id === chatId
+    );
+
     if (!chat) return;
 
     setActiveChatId(chat.id);
     activeChatIdRef.current = chat.id;
-    setMessages(chat.messages);
-    messagesRef.current = chat.messages;
+
+    const restoredMessages = chat.messages || [];
+
+    setMessages(restoredMessages);
+    messagesRef.current = restoredMessages;
+
     setInput("");
     setRecentPrompt("");
-    setResultData("");
-    setShowResult(chat.messages.length > 0);
-    setCurrentInteractionId(chat.interactionId);
-    interactionIdRef.current = chat.interactionId;
+
+    setResultData(
+      [...restoredMessages]
+        .reverse()
+        .find((message) => message.role === "assistant")
+        ?.text || ""
+    );
+
+    setShowResult(restoredMessages.length > 0);
+
+    const interactionId = chat.interactionId || null;
+
+    setCurrentInteractionId(interactionId);
+    interactionIdRef.current = interactionId;
   };
 
   const deleteChat = (chatId) => {
     if (loadingRef.current) return;
 
-    setChatHistory((previous) =>
-      previous.filter((chat) => chat.id !== chatId)
+    const remainingChats = chatHistoryRef.current.filter(
+      (chat) => chat.id !== chatId
     );
+
+    chatHistoryRef.current = remainingChats;
+    setChatHistory(remainingChats);
 
     if (activeChatIdRef.current === chatId) {
       setActiveChatId(null);
@@ -140,25 +281,38 @@ const ContextProvider = ({ children }) => {
   const onSent = async (promptText, imageFile = null) => {
     const promptToSend = (promptText ?? input).trim();
 
-    if ((!promptToSend && !imageFile) || loadingRef.current) return;
+    if ((!promptToSend && !imageFile) || loadingRef.current) {
+      return;
+    }
 
     loadingRef.current = true;
     setLoading(true);
 
     let chatId = activeChatIdRef.current;
-    let previousMessages = messagesRef.current;
+    let assistantMessageId = null;
+    let responseText = "";
+    let streamCompleted = false;
 
     try {
       const imageDataUrl = imageFile
         ? await fileToDataUrl(imageFile)
         : null;
 
+      let previousMessages = messagesRef.current;
+
       if (!chatId) {
         const newChatData = createChat();
+
         chatId = newChatData.id;
         previousMessages = [];
 
-        setChatHistory((previous) => [newChatData, ...previous]);
+        const nextHistory = [
+          newChatData,
+          ...chatHistoryRef.current,
+        ];
+
+        chatHistoryRef.current = nextHistory;
+        setChatHistory(nextHistory);
         setActiveChatId(chatId);
         activeChatIdRef.current = chatId;
         interactionIdRef.current = null;
@@ -168,10 +322,11 @@ const ContextProvider = ({ children }) => {
           (chat) => chat.id === chatId
         );
 
-        previousMessages = existingChat?.messages || previousMessages;
+        previousMessages = existingChat?.messages || [];
       }
 
-      const displayPrompt = promptToSend || "Describe this image.";
+      const displayPrompt =
+        promptToSend || "Describe this image.";
 
       setRecentPrompt(displayPrompt);
       setInput("");
@@ -191,14 +346,16 @@ const ContextProvider = ({ children }) => {
         text: "",
       };
 
+      assistantMessageId = assistantMessage.id;
+
       const updatedMessages = [
         ...previousMessages,
         userMessage,
         assistantMessage,
       ];
 
-      setMessages(updatedMessages);
       messagesRef.current = updatedMessages;
+      setMessages(updatedMessages);
 
       const existingChat = chatHistoryRef.current.find(
         (chat) => chat.id === chatId
@@ -206,7 +363,7 @@ const ContextProvider = ({ children }) => {
 
       const title =
         previousMessages.length === 0
-          ? (promptToSend || "Image question").slice(0, 35)
+          ? displayPrompt.slice(0, 35)
           : existingChat?.title || displayPrompt.slice(0, 35);
 
       updateChat(chatId, {
@@ -220,19 +377,22 @@ const ContextProvider = ({ children }) => {
         imageFile
       );
 
-      if (!stream || !stream[Symbol.asyncIterator]) {
-        throw new Error("Invalid response stream.");
+      if (
+        !stream ||
+        typeof stream[Symbol.asyncIterator] !== "function"
+      ) {
+        throw new Error("The API did not return a valid stream.");
       }
 
-      let responseText = "";
+      let receivedText = false;
 
       for await (const event of stream) {
         const eventType = event.event_type ?? event.type;
 
         if (
           eventType === "interaction.created" ||
-          eventType === "interaction.complete" ||
-          eventType === "interaction.completed"
+          eventType === "interaction.completed" ||
+          eventType === "interaction.complete"
         ) {
           const id = event.interaction?.id ?? event.id;
 
@@ -242,13 +402,25 @@ const ContextProvider = ({ children }) => {
           }
         }
 
+        if (
+          eventType === "interaction.failed" ||
+          eventType === "error"
+        ) {
+          throw new Error(
+            event.error?.message ||
+              event.message ||
+              "The AI interaction failed."
+          );
+        }
+
         let delta = "";
 
         if (
-          eventType === "content.delta" &&
+          (eventType === "step.delta" ||
+            eventType === "content.delta") &&
           event.delta?.type === "text"
         ) {
-          delta = event.delta.text ?? "";
+          delta = event.delta.text || "";
         } else if (
           eventType === "text.delta" ||
           eventType === "interaction.text.delta"
@@ -256,87 +428,66 @@ const ContextProvider = ({ children }) => {
           delta =
             typeof event.delta === "string"
               ? event.delta
-              : event.text ?? "";
+              : event.text || "";
         }
 
         if (delta) {
+          receivedText = true;
           responseText += delta;
-          setResultData(responseText);
 
-          setMessages((previous) => {
-            const next = previous.map((message) =>
-              message.id === assistantMessage.id
-                ? { ...message, text: responseText }
-                : message
-            );
-
-            messagesRef.current = next;
-
-            setChatHistory((chats) =>
-              chats.map((chat) =>
-                chat.id === chatId
-                  ? {
-                      ...chat,
-                      messages: next,
-                      interactionId: interactionIdRef.current,
-                      updatedAt: Date.now(),
-                    }
-                  : chat
-              )
-            );
-
-            return next;
-          });
-        }
-      }
-
-      setChatHistory((previous) =>
-        previous.map((chat) =>
-          chat.id === chatId
-            ? {
-                ...chat,
-                interactionId: interactionIdRef.current,
-                updatedAt: Date.now(),
-              }
-            : chat
-        )
-      );
-    } catch (error) {
-      let errorText = "Something went wrong. Please try again.";
-
-      if (error?.message?.includes("429") || error?.status === 429) {
-        errorText =
-          "You've reached the free AI usage limit. Please try again after your quota resets.";
-      } else if (error?.message) {
-        errorText = error.message;
-      }
-
-      setMessages((previous) => {
-        const next = previous.map((message, index) =>
-          index === previous.length - 1 && message.role === "assistant"
-            ? { ...message, text: errorText }
-            : message
-        );
-
-        messagesRef.current = next;
-
-        if (chatId) {
-          setChatHistory((chats) =>
-            chats.map((chat) =>
-              chat.id === chatId
-                ? { ...chat, messages: next, updatedAt: Date.now() }
-                : chat
-            )
+          updateAssistantMessage(
+            chatId,
+            assistantMessageId,
+            responseText
           );
         }
+      }
 
-        return next;
+      if (!receivedText) {
+        throw new Error(
+          "The stream ended without any text. Please try again."
+        );
+      }
+
+      streamCompleted = true;
+
+      updateChat(chatId, {
+        interactionId: interactionIdRef.current,
       });
+    } catch (error) {
+      console.error("Gemini chat error:", error);
 
-      setResultData(errorText);
+      const errorText = getErrorMessage(error);
+
+      if (chatId && assistantMessageId) {
+        const finalText = responseText
+          ? `${responseText}\n\n_${errorText}_`
+          : errorText;
+
+        updateAssistantMessage(
+          chatId,
+          assistantMessageId,
+          finalText
+        );
+      } else {
+        setResultData(errorText);
+      }
     } finally {
       loadingRef.current = false;
       setLoading(false);
+
+      if (chatId && assistantMessageId) {
+        updateChat(chatId, {
+          messages: messagesRef.current,
+          interactionId: interactionIdRef.current,
+        });
+      }
+
+      if (!streamCompleted) {
+        console.warn(
+          "The response did not complete. Received text was preserved."
+        );
+      }
     }
   };
 

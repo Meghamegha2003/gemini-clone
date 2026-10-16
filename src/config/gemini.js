@@ -1,11 +1,11 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY,
-});
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
-let requestQueue = Promise.resolve();
+const ai = new GoogleGenAI({
+  apiKey,
+});
 
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
@@ -20,20 +20,47 @@ const fileToBase64 = (file) =>
       resolve(reader.result.split(",")[1]);
     };
 
-    reader.onerror = () => reject(new Error("Failed to read image."));
+    reader.onerror = () => {
+      reject(new Error("Failed to read image."));
+    };
+
     reader.readAsDataURL(file);
   });
 
-function runChat(promptText, previousInteractionId = null, imageFile = null) {
-  const request = requestQueue.then(async () => {
-    const prompt = promptText?.trim() || "Describe this image.";
+async function runChat(
+  promptText,
+  previousInteractionId = null,
+  imageFile = null
+) {
+  try {
+    if (!apiKey) {
+      throw new Error(
+        "Gemini API key is missing. Check your .env file."
+      );
+    }
+
+    const prompt =
+      promptText?.trim() ||
+      (imageFile ? "Describe this image." : "");
+
+    if (!prompt && !imageFile) {
+      throw new Error("Please enter a prompt.");
+    }
+
     let input = prompt;
 
     if (imageFile) {
+      if (!imageFile.type.startsWith("image/")) {
+        throw new Error("Please select a valid image file.");
+      }
+
       const imageBase64 = await fileToBase64(imageFile);
 
       input = [
-        { type: "text", text: prompt },
+        {
+          type: "text",
+          text: prompt,
+        },
         {
           type: "image",
           data: imageBase64,
@@ -43,7 +70,7 @@ function runChat(promptText, previousInteractionId = null, imageFile = null) {
     }
 
     const payload = {
-      model: "gemini-3.8-flash",
+      model: "gemma-4-26b-a4b-it",
       input,
       stream: true,
     };
@@ -52,15 +79,11 @@ function runChat(promptText, previousInteractionId = null, imageFile = null) {
       payload.previous_interaction_id = previousInteractionId;
     }
 
-    return ai.interactions.create(payload);
-  });
-
-  requestQueue = request.then(
-    () => undefined,
-    () => undefined
-  );
-
-  return request;
+    return await ai.interactions.create(payload);
+  } catch (error) {
+    console.error("Gemini API Error:", error);
+    throw error;
+  }
 }
 
 export default runChat;
