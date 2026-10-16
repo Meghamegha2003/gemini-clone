@@ -188,6 +188,7 @@ gemini-clone/
 └── README.md
 ```
 
+<<<<<<< HEAD
 
 ## 📚 Documentation
 
@@ -197,3 +198,13 @@ gemini-clone/
 - [Marked](https://marked.js.org/)
 - [Google Fonts](https://fonts.google.com/)
 
+=======
+## 📚 Documentation
+
+- [React](https://react.dev/)
+- [Vite](https://vite.dev/)
+- [Google GenAI SDK](https://www.npmjs.com/package/@google/genai)
+- [Marked](https://marked.js.org/)
+- [Google Fonts](https://fonts.google.com/)
+
+>>>>>>> 1b740d188346c7cd017b115bea1f1a75cac469fa
